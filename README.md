@@ -4,7 +4,7 @@
 
 GraphOps is a threat-hunting and blast-radius analysis platform built around a Neo4j security knowledge graph. It helps security analysts understand the connected environment when a device is compromised — discovering attack paths, mapping blast radius, identifying choke-point nodes, and recommending containment actions.
 
-> **Current status: Phase 1 — Foundation**
+> **Current status: Phase 3 — SOC Dashboard + Interactive Graph Visualization**
 
 ---
 
@@ -37,26 +37,32 @@ See [`docs/architecture.md`](docs/architecture.md) for the full architecture ref
 graphops/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py            # FastAPI app
-│   │   ├── config.py          # Settings from env vars
-│   │   ├── database.py        # Neo4j connection service
-│   │   ├── routes/health.py   # Health-check endpoints
-│   │   └── services/          # Business logic (future phases)
+│   │   ├── main.py                    # FastAPI app
+│   │   ├── config.py                  # Settings from env vars
+│   │   ├── database.py                # Neo4j connection service
+│   │   ├── routes/
+│   │   │   ├── health.py              # Health-check endpoints
+│   │   │   ├── blast_radius.py        # Blast radius analysis endpoint
+│   │   │   └── attack_path.py         # Attack path discovery endpoint
+│   │   └── services/
+│   │       ├── blast_radius.py        # Blast radius graph traversal logic
+│   │       └── attack_path.py         # Attack path discovery logic
 │   ├── scripts/
-│   │   ├── seed_database.py   # Populate Neo4j with demo data
-│   │   └── clear_database.py  # Clear demo data
+│   │   ├── seed_database.py           # Populate Neo4j with demo data
+│   │   ├── clear_database.py          # Clear demo data
+│   │   └── test_phase2.py             # Phase 2 endpoint verification
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx            # Status dashboard
-│   │   ├── main.tsx           # React entry point
-│   │   ├── index.css          # Styles
-│   │   └── services/api.ts   # API client
+│   │   ├── App.tsx                    # Status dashboard
+│   │   ├── main.tsx                   # React entry point
+│   │   ├── index.css                  # Styles
+│   │   └── services/api.ts           # API client
 │   ├── package.json
 │   └── .env.example
-├── data/                      # Data exports (gitignored)
-├── docs/architecture.md       # Architecture docs
+├── data/                              # Data exports (gitignored)
+├── docs/architecture.md               # Architecture docs
 ├── .gitignore
 └── README.md
 ```
@@ -202,69 +208,172 @@ This only deletes nodes with GraphOps labels (User, Device, Server, etc.) and th
 
 ---
 
-## API Health Checks
+## API Endpoints
 
-Once the backend is running:
+### Health Checks
 
-| Endpoint            | Description                  |
-|---------------------|------------------------------|
-| `GET /api/health`      | API liveness check        |
-| `GET /api/health/neo4j` | Neo4j connectivity test  |
+| Endpoint               | Description                |
+|------------------------|----------------------------|
+| `GET /api/health`      | API liveness check         |
+| `GET /api/health/neo4j`| Neo4j connectivity test    |
 
-Example:
+### Phase 2 — Graph Intelligence
+
+| Endpoint                                      | Description                              |
+|-----------------------------------------------|------------------------------------------|
+| `GET /api/blast-radius/{device_id}`           | Blast radius analysis from a device      |
+| `GET /api/attack-path/{source_id}/{target_id}`| Attack path discovery between two nodes  |
+
+---
+
+## Blast Radius Analysis
+
+**Endpoint:** `GET /api/blast-radius/{device_id}`
+
+Given a compromised device, uses Neo4j variable-length path traversal to find all assets reachable within a configurable hop limit. Traverses all relationship types in either direction to capture lateral movement paths.
+
+**Query parameter:**
+- `max_hops` (int, default: 3, range: 1–10) — maximum traversal depth
+
+**How it works:**
+
+1. Validates the device exists in the graph
+2. Executes a variable-length path Cypher query: `(start)-[:REL_TYPE *1..N]-(reached)`
+3. For each reachable node, records the minimum hop distance
+4. Groups nodes by hop distance (1-hop, 2-hop, 3-hop, etc.)
+5. Counts affected assets by type (users, devices, servers, applications, databases)
+6. Identifies critical assets (criticality = "critical" or "high")
+7. Collects all relationships used in the traversal paths
+
+**Example request:**
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/api/health
+Invoke-RestMethod "http://localhost:8000/api/blast-radius/DEV-007?max_hops=3"
 ```
+
+**Example response (abbreviated):**
 
 ```json
 {
-  "status": "ok",
-  "service": "GraphOps API"
-}
-```
-
-```powershell
-Invoke-RestMethod http://localhost:8000/api/health/neo4j
-```
-
-```json
-{
-  "service": "Neo4j",
-  "status": "connected",
-  "message": "Neo4j is reachable",
-  "uri": "neo4j+s://...",
-  "database": "neo4j"
+  "compromised_device": "DEV-007",
+  "max_hops": 3,
+  "total_affected_assets": 43,
+  "hop_1_nodes": [ ... ],
+  "hop_2_nodes": [ ... ],
+  "hop_3_nodes": [ ... ],
+  "affected_counts": {
+    "users": 7,
+    "devices": 5,
+    "servers": 10,
+    "applications": 6,
+    "databases": 5,
+    "ips": 3,
+    "vulnerabilities": 3
+  },
+  "critical_assets": [
+    {"id": "DB-001", "labels": ["Database"], "name": "Finance-DB", "criticality": "critical"},
+    {"id": "SRV-005", "labels": ["Server"], "name": "db-prod-01", "criticality": "critical"}
+  ],
+  "relationships": [ ... ],
+  "all_nodes": [ ... ]
 }
 ```
 
 ---
 
-## Phase 1 Limitations
+## Attack Path Discovery
 
-Phase 1 is the **foundation only**. The following are **not** implemented yet:
+**Endpoint:** `GET /api/attack-path/{source_id}/{target_id}`
 
-- Attack-path traversal algorithms
-- Blast-radius computation
-- Graph visualization / interactive dashboard
-- ML/GNN-based risk scoring
-- AI-powered explanations or recommendations
-- Authentication / authorization
-- Real-time event streaming (Kafka)
-- Containerization (Docker/Kubernetes)
+Given a source node (e.g. a compromised device) and a target critical asset (e.g. a database), finds the shortest attack paths through the graph.
+
+**Query parameter:**
+- `max_paths` (int, default: 5, range: 1–20) — maximum number of paths to return
+
+**Node IDs can be any type:** deviceId, userId, serverId, appId, databaseId, cveId, or IP address.
+
+**How it works:**
+
+1. Resolves both source and target nodes by checking all known ID properties
+2. Uses Neo4j's `allShortestPaths` to find all shortest paths
+3. For each path, extracts nodes, relationships, and builds a human-readable explanation
+4. Returns paths sorted by hop count (shortest first)
+
+**Example request:**
+
+```powershell
+Invoke-RestMethod "http://localhost:8000/api/attack-path/DEV-007/DB-001"
+```
+
+**Example response:**
+
+```json
+{
+  "source": {
+    "labels": ["Device"],
+    "deviceId": "DEV-007",
+    "hostname": "Laptop-07",
+    "status": "compromised"
+  },
+  "target": {
+    "labels": ["Database"],
+    "databaseId": "DB-001",
+    "name": "Finance-DB",
+    "criticality": "critical"
+  },
+  "paths_found": 1,
+  "shortest_path": {
+    "hop_count": 2,
+    "nodes": [ ... ],
+    "relationships": [ ... ],
+    "explanation": "Laptop-07 (Device) →[CONNECTED_TO]→ app-prod-01 (Server) →[ACCESSES]→ Finance-DB (Database)"
+  },
+  "all_paths": [ ... ]
+}
+```
+
+**Another example — user to database:**
+
+```powershell
+Invoke-RestMethod "http://localhost:8000/api/attack-path/USR-001/DB-001"
+```
+
+```
+Ateeq Khan (User) →[PRIVILEGED_ACCESS]→ app-prod-01 (Server) →[ACCESSES]→ Finance-DB (Database)
+```
 
 ---
 
-## Future Phases
+## Running Phase 2 Tests
 
-| Phase | Focus                                              |
-|-------|----------------------------------------------------|
-| 2     | Blast-radius API, graph traversal, attack-path discovery |
-| 3     | Interactive graph visualization (D3.js / Cytoscape) |
-| 4     | ML/GNN-based risk scoring and anomaly detection     |
-| 5     | AI-powered containment recommendations              |
-| 6     | Real-time event streaming (Kafka) and alerting       |
-| 7     | Containerization, CI/CD, production deployment       |
+With the backend running:
+
+```powershell
+cd graphops\backend
+python scripts/test_phase2.py
+```
+
+This verifies:
+- Existing health endpoints still work
+- Blast radius returns correct results for valid/invalid devices
+- Blast radius respects custom hop limits
+- Attack paths are discovered between connected nodes
+- 404 errors for non-existent nodes
+- Graceful handling of no-path-found cases
+
+---
+
+## Phases
+
+| Phase | Focus                                              | Status       |
+|-------|----------------------------------------------------|--------------|
+| 1     | Foundation — FastAPI, Neo4j, seed data, health     | ✅ Complete   |
+| 2     | Blast-radius API, attack-path discovery            | ✅ Complete   |
+| 3     | Interactive graph visualization (Cytoscape)        | ✅ Complete   |
+| 4     | ML/GNN-based risk scoring and anomaly detection    | 🔜 Next      |
+| 5     | AI-powered containment recommendations             | Planned      |
+| 6     | Real-time event streaming (Kafka) and alerting     | Planned      |
+| 7     | Containerization, CI/CD, production deployment     | Planned      |
 
 ---
 
