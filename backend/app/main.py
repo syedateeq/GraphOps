@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import app_settings
 from app.database import db
 from app.routes.health import router as health_router
+from app.routes.blast_radius import router as blast_radius_router
+from app.routes.attack_path import router as attack_path_router
 
 
 @asynccontextmanager
@@ -44,3 +46,5 @@ app.add_middleware(
 
 # Register routes
 app.include_router(health_router)
+app.include_router(blast_radius_router)
+app.include_router(attack_path_router)
